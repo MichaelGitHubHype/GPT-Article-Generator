@@ -4,6 +4,9 @@ import requests
 import os
 import threading
 import json
+from tqdm import tqdm
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor
 
 client = OpenAI()
 
@@ -12,7 +15,7 @@ def call_openai(system_prompt, user_prompt):
     response = client.chat.completions.create(
         model="gpt-4-turbo",
         messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}
-        ]
+                  ]
     )
     return response.choices[0].message.content
 
@@ -33,12 +36,14 @@ headers = {
     'Accept': 'application/json',
 }
 
+
 def create_shopify_post(payload):
+    # Shopify API reference: https://shopify.dev/docs/api/admin-rest/2024-04/resources/article
     response = requests.post(f"https://{store_admin}.myshopify.com/admin/api/2024-04/blogs/{blog_id}/articles.json",
-    headers=headers,
-    data=json.dumps(payload),
-    auth=(api_key, password)
-)
+                             headers=headers,
+                             data=json.dumps(payload),
+                             auth=(api_key, password)
+                             )
     if response.status_code == 201:
         print(f"Successfully created post with ID: {response.json()['article']['id']}")
     else:
@@ -46,24 +51,24 @@ def create_shopify_post(payload):
         response.raise_for_status()  # This will raise an exception if the request failed
 
 
-def generate_blog_post():
+def generate_blog_post(row):
+    url_slug = row['URL Slug']
+    meta_title = row['Meta Title']
+    description = row['Description of Page']
+
     try:
-        url_slug = "dress-codes"
-        meta_title = "A summary of all dress codes for Men"
-        description = "All the different dress codes for men"
         system_prompt1 = "You are an essay-writing assistant who creates detailed outlines for essays. You always write at least 15 points for each outline."
         user_prompt1 = f"Create an outline for an essay about {meta_title} with at least 15 titles."
 
-        print(f"Generating outline for URL Slug {url_slug}")
         essay_outline = call_openai(system_prompt1, user_prompt1)
+        print("Essay outline is: ", essay_outline)
 
-        system_prompt2 = f'Internal links are VITAL for  SEO. Please always use 5 internal links. Never mention essay. Write an article using the {essay_outline}. Internal links are vital to SEO. Please always include a maximum 5 ahref internal links contextually in the article not just at the end. NEVER USE PLACEHOLDERS. ALWAYS WRITE ALL THE ARTICLE IN FULL. Always include 5 internal links. Output in HTML. Write an article using {essay_outline} with 3 paragraphs per heading. Each heading of the essay should have at least one list or table (with a small black border, and border between the rows and columns) also. It will go onto shopify so I dont need opening HTML tags. Create relative links using the following relative links contextually thoughout the article. Use a maximum of 3. /suit-basics/, /suit-fit/, /how-to-wear-a-suit/, /how-to-measure/, /dress-pants-fit/, /suit-cuts/, /suit-vs-tuxedo/, /how-to-wear-a-tuxedo/, /blue-tuxedo/, /tuxedo-shirt/, /best-affordable-tuxedos/, /formal-attire/, /wedding-attire/, /black-tie/, /business-professional/, /job-interview/, /smart-casual/, /business-casual/, /funeral-attire/, /suit-color/, /color-combinations/, /blazer-trousers/, /dress-shirt-fit/, /how-to-wear-a-dress-shirt/'
-        user_prompt2 = f"Never leave an article incomplete, always write the entire thing. Make sure all content is relevant to the article. Use a fun tone of voice. Always include at least 5 internal links. Each heading from the essay outline should have at least 3 paragraphs and a table or list After writing the article, under H2 and H3 headers create an FAQ section, followed by FAQPage schema opening and closing with <script> tags."
-        print("Types: ", type(system_prompt2), type(user_prompt2))
-        print(f"Generating blog content for URL Slug {url_slug}")
+        system_prompt2 = f'Never mention essay. Write an article using the {essay_outline}. NEVER USE PLACEHOLDERS. ALWAYS WRITE ALL THE ARTICLE IN FULL. Output in HTML. Write an article using {essay_outline} with 3 paragraphs per heading. Each heading of the essay should have at least one list or table (with a small black border, and border between the rows and columns) also. It will go onto wordpress so I dont need opening HTML tags.'
+        user_prompt2 = f"Never leave an article incomplete, always write the entire thing. Make sure all content is relevant to the article. Use a fun tone of voice. Each heading from the essay outline should have at least 3 paragraphs and a table or list."
         blog_content = call_openai(system_prompt2, user_prompt2)
-        print(f"Generated blog content for URL Slug {url_slug}")
-        result = {'URL Slug': url_slug, 'Meta Title': meta_title, 'Description': description, 'Blog Content': blog_content}
+        print("Blog content is: ", blog_content)
+        result = {'URL Slug': url_slug, 'Meta Title': meta_title, 'Description': description,
+                  'Blog Content': blog_content}
         with output_lock:
             global output_df
             output_df = pd.concat([output_df, pd.DataFrame([result])], ignore_index=True)
@@ -88,7 +93,18 @@ def generate_blog_post():
         print(f"Error generating blog post for URL Slug {url_slug}: {e}")
         return None
 
-if __name__ == "__main__":
-    # main()
-    generate_blog_post()
 
+def main():
+    df = pd.read_csv('keywords.csv')
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(generate_blog_post, row) for index, row in df.iterrows()]
+        for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures)):
+            try:
+                future.result()  # To raise exceptions if any occurred during the thread's execution
+            except Exception as e:
+                print(f"An error occurred: {e}")
+
+
+if __name__ == "__main__":
+    main()
