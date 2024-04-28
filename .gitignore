@@ -1,0 +1,4 @@
+articles/
+venv/
+.idea/
+output.csv
